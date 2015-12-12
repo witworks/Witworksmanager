@@ -3,6 +3,8 @@ package com.witworks.witworksmanager;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothServerSocket;
+import android.bluetooth.BluetoothSocket;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -18,24 +20,32 @@ import android.widget.Button;
 import android.widget.ListView;
 import android.widget.Toast;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Set;
-
-import javax.security.auth.callback.Callback;
+import java.util.UUID;
 
 public class MainActivity extends AppCompatActivity {
     private BluetoothAdapter bt_adapter = null;
     private ListView bt_list_view;
+
     private ArrayList<BluetoothDevice> bt_device_list = null;
+    private BluetoothSocket bt_socket = null; // object of BluetoothSocket or BluetoothServerSocket
+
+    private Thread bluetooth_server_thread = null;
+
     private boolean bt_scanning = false;
     private boolean is_watch = false;
+    private boolean bt_connected = false;
+
+    final UUID witworks_uuid = UUID.fromString("237df75e-685e-4f7c-9c02-d3d8735e73b3");
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        bt_device_list = new ArrayList<BluetoothDevice>();
+        bt_device_list = new ArrayList<>();
 
         // Check for bluetooth device, exit if not present
         if (bt_adapter == null) {
@@ -51,22 +61,79 @@ public class MainActivity extends AppCompatActivity {
                                 System.exit(0);
                             }
                         })
-                    .show();
+                        .show();
             }
         }
+
+
 
         bt_list_view = (ListView) findViewById(R.id.bt_dev_list);
         bt_list_view.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                ListView lv = (ListView) parent;
-                BluetoothDevice device = (BluetoothDevice) bt_device_list.get(position);
-                Object dev = lv.getItemAtPosition(position);
+                BluetoothDevice device = bt_device_list.get(position);
 
-                if (is_watch == true) {
-                    // Setup bluetooth client
+                if (bt_connected) {
+                    try {
+                        bt_socket.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
                 } else {
-                    // Setup bluetooth master
+                    if (is_watch) {
+                        // Setup bluetooth client
+                        try {
+                            bt_socket = device.createRfcommSocketToServiceRecord(witworks_uuid);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            Toast.makeText(getApplicationContext(), "Creating Bluetooth socket failed", Toast.LENGTH_LONG).show();
+                        }
+
+                        try {
+                            bt_socket.connect();
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            Toast.makeText(getApplicationContext(), "Connection failed", Toast.LENGTH_LONG).show();
+                        }
+                    } else {
+                        // Setup bluetooth master
+                        BluetoothServerSocket bt_server_socket = null;
+                        try {
+                            bt_server_socket = bt_adapter.listenUsingRfcommWithServiceRecord("WitworksManager", witworks_uuid);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            Toast.makeText(getApplicationContext(),
+                                    "Could not get a bluetoothserversocket: " + e.toString(),
+                                    Toast.LENGTH_LONG).show();
+                        }
+
+                        final BluetoothServerSocket finalBt_server_socket = bt_server_socket;
+                        bluetooth_server_thread = new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                while (true) {
+                                    try {
+                                        assert finalBt_server_socket != null;
+                                        bt_socket = finalBt_server_socket.accept();
+                                    } catch (IOException e) {
+                                        e.printStackTrace();
+                                        break;
+                                    }
+
+                                    if (bt_socket != null) {
+                                        try {
+                                            finalBt_server_socket.close();
+                                        } catch (IOException e) {
+                                            e.printStackTrace();
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+                        bluetooth_server_thread.start();
+                    }
+                    bt_connected = true;
                 }
             }
         });
@@ -75,12 +142,12 @@ public class MainActivity extends AppCompatActivity {
     public void on_bt_scan_button_clicked(View v) {
         Button scan_button = (Button) v;
 
-        if (bt_scanning == true) {
+        if (bt_scanning) {
             bt_adapter.cancelDiscovery();
             scan_button.setText("Scan Witworks App");
             bt_scanning = false;
         } else {
-            if (bt_adapter.isEnabled() == false) {
+            if (!bt_adapter.isEnabled()) {
                 Intent bt_on = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
                 startActivityForResult(bt_on, 0);
                 // Toast.makeText(getApplicationContext(), "Turned bluetooth on", Toast.LENGTH_LONG).show();
@@ -94,7 +161,10 @@ public class MainActivity extends AppCompatActivity {
 
             for (BluetoothDevice bt_dev : paired) {
                 bt_device_list.add(bt_dev);
-                // TODO: From the MAC address generate a unique number / string and show it to user
+                /*
+                 * TODO: From the MAC address generate a unique string and show it to user
+                 * Same string must be shown in phone and device's witworks app.
+                 */
                 list.add(bt_dev.getName());
             }
 
