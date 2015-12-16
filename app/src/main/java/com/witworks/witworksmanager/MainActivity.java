@@ -3,7 +3,6 @@ package com.witworks.witworksmanager;
 import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -22,21 +21,22 @@ import android.widget.Toast;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Set;
 import java.util.UUID;
 
 public class MainActivity extends AppCompatActivity {
     private BluetoothAdapter bt_adapter = null;
     private ListView bt_list_view;
+    private BluetoothDevice bt_to_pair = null;
 
     private ArrayList<BluetoothDevice> bt_device_list = null;
     private BluetoothSocket bt_socket = null; // object of BluetoothSocket or BluetoothServerSocket
 
-    private Thread bluetooth_server_thread = null;
-
     private boolean bt_scanning = false;
-    private boolean is_watch = false;
+    private boolean bt_discoverable = false;
     private boolean bt_connected = false;
+    private boolean bt_is_paired = false;
+
+    private BroadcastReceiver bt_info_receiver = null;
 
     final UUID witworks_uuid = UUID.fromString("237df75e-685e-4f7c-9c02-d3d8735e73b3");
 
@@ -46,6 +46,10 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         bt_device_list = new ArrayList<>();
+        ArrayList list = new ArrayList<>();
+        ArrayAdapter adapter = new ArrayAdapter(this, android.R.layout.simple_list_item_1, list);
+        bt_list_view = (ListView) findViewById(R.id.bt_dev_list);
+        bt_list_view.setAdapter(adapter);
 
         // Check for bluetooth device, exit if not present
         if (bt_adapter == null) {
@@ -65,9 +69,95 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        if (!bt_adapter.isEnabled()) {
+            Intent enable_intent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enable_intent, 1);
+        } else {
+            Intent discoverable_intent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+            startActivityForResult(discoverable_intent, 2);
+        }
 
+        final String ACTION_DISAPPEARED = "android.bluetooth.device.action.DISAPPEARED";
+        IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED);
+        filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+        // filter.addAction(BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED);
+        filter.addAction(BluetoothAdapter.ACTION_SCAN_MODE_CHANGED);
 
-        bt_list_view = (ListView) findViewById(R.id.bt_dev_list);
+        // filter.addAction(BluetoothDevice.ACTION_NAME_CHANGED);
+        filter.addAction(BluetoothDevice.ACTION_PAIRING_REQUEST);
+        filter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        filter.addAction(BluetoothDevice.ACTION_FOUND);
+        filter.addAction(ACTION_DISAPPEARED);
+
+        bt_info_receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+                if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                    final int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+                    if (state == BluetoothAdapter.STATE_OFF) {
+                        Toast.makeText(getApplicationContext(), "Bluetooth turned off", Toast.LENGTH_LONG).show();
+                    } else if (state == BluetoothAdapter.STATE_ON) {
+                        Toast.makeText(getApplicationContext(), "Bluetooth turned on", Toast.LENGTH_LONG).show();
+                    }
+                } else if (BluetoothAdapter.ACTION_SCAN_MODE_CHANGED.equals(action)) {
+                    final int state = intent.getIntExtra(BluetoothAdapter.EXTRA_SCAN_MODE, BluetoothAdapter.ERROR);
+                    if (state == BluetoothAdapter.SCAN_MODE_CONNECTABLE_DISCOVERABLE) {
+                        Toast.makeText(getApplicationContext(), "Bluetooth is discoverable", Toast.LENGTH_LONG).show();
+                        bt_discoverable = true;
+                    } else if (state == BluetoothAdapter.SCAN_MODE_CONNECTABLE || state == BluetoothAdapter.SCAN_MODE_NONE)
+                        bt_discoverable = false;
+                } else if (BluetoothAdapter.ACTION_DISCOVERY_STARTED.equals(action)) {
+                    bt_scanning = true;
+                    Button scan_button = (Button) findViewById(R.id.bt_scan_button);
+                    scan_button.setText("Stop scanning");
+                } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
+                    bt_scanning = false;
+                    Button scan_button = (Button) findViewById(R.id.bt_scan_button);
+                    scan_button.setText("Scan Witworks app");
+
+                    if (bt_to_pair != null) {
+                        pair_device(bt_to_pair);
+                        bt_to_pair = null;
+                    }
+                } else if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
+                    final int state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+                    final int prev_state = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE,
+                            BluetoothDevice.ERROR);
+                    if (state == BluetoothDevice.BOND_BONDED) {
+                        bt_is_paired = true;
+                        BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                        Toast.makeText(getApplicationContext(), "Paired with " + device.getName(), Toast.LENGTH_LONG).show();
+                    } else if (state == BluetoothDevice.BOND_NONE && prev_state == BluetoothDevice.BOND_BONDED) {
+                        bt_is_paired = false;
+                        Toast.makeText(getApplicationContext(), "Unpaired", Toast.LENGTH_LONG).show();
+                    }
+                } else if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (!bt_device_list.contains(device)) {
+                        bt_device_list.add(device);
+                        ArrayAdapter adapter = (ArrayAdapter) bt_list_view.getAdapter();
+                        /*
+                         * TODO: From the MAC address generate a unique string and show it to user
+                         * Same string must be shown in phone and device's witworks app.
+                         */
+                        adapter.add(device.getName());
+                        bt_list_view.setAdapter(adapter);
+                    }
+                } else if (ACTION_DISAPPEARED.equals(action)) {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    bt_device_list.remove(device);
+                    ArrayAdapter adapter = (ArrayAdapter) bt_list_view.getAdapter();
+                    adapter.remove(device.getName());
+                    bt_list_view.setAdapter(adapter);
+                } else if (BluetoothDevice.ACTION_PAIRING_REQUEST.equals(action)) {
+                    Toast.makeText(getApplicationContext(), "Pairing in progress", Toast.LENGTH_LONG).show();
+                }
+            }
+        };
+        registerReceiver(bt_info_receiver, filter);
+
         bt_list_view.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
@@ -80,116 +170,76 @@ public class MainActivity extends AppCompatActivity {
                         e.printStackTrace();
                     }
                 } else {
-                    if (is_watch) {
-                        // Setup bluetooth client
-                        try {
-                            bt_socket = device.createRfcommSocketToServiceRecord(witworks_uuid);
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                            Toast.makeText(getApplicationContext(), "Creating Bluetooth socket failed", Toast.LENGTH_LONG).show();
-                        }
-
-                        try {
-                            bt_socket.connect();
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                            Toast.makeText(getApplicationContext(), "Connection failed", Toast.LENGTH_LONG).show();
-                        }
+                    if (bt_adapter.isDiscovering()) {
+                        bt_adapter.cancelDiscovery();
+                        bt_to_pair = device;
                     } else {
-                        // Setup bluetooth master
-                        BluetoothServerSocket bt_server_socket = null;
-                        try {
-                            bt_server_socket = bt_adapter.listenUsingRfcommWithServiceRecord("WitworksManager", witworks_uuid);
-                        } catch (IOException e) {
-                            e.printStackTrace();
-                            Toast.makeText(getApplicationContext(),
-                                    "Could not get a bluetoothserversocket: " + e.toString(),
-                                    Toast.LENGTH_LONG).show();
-                        }
-
-                        final BluetoothServerSocket finalBt_server_socket = bt_server_socket;
-                        bluetooth_server_thread = new Thread(new Runnable() {
-                            @Override
-                            public void run() {
-                                while (true) {
-                                    try {
-                                        assert finalBt_server_socket != null;
-                                        bt_socket = finalBt_server_socket.accept();
-                                    } catch (IOException e) {
-                                        e.printStackTrace();
-                                        break;
-                                    }
-
-                                    if (bt_socket != null) {
-                                        try {
-                                            finalBt_server_socket.close();
-                                        } catch (IOException e) {
-                                            e.printStackTrace();
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-                        bluetooth_server_thread.start();
+                        pair_device(device);
                     }
-                    bt_connected = true;
                 }
             }
         });
     }
 
-    public void on_bt_scan_button_clicked(View v) {
-        Button scan_button = (Button) v;
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        bt_adapter.cancelDiscovery();
+        unregisterReceiver(bt_info_receiver);
+    }
 
+/*
+    private void bt_enabled() {
+        ArrayList list = new ArrayList<>();
+        Set<BluetoothDevice> paired = bt_adapter.getBondedDevices();
+
+        for (BluetoothDevice bt_dev : paired) {
+            // bt_device_list.add(bt_dev);
+            // list.add(bt_dev.getName());
+        }
+
+        final ArrayAdapter adapter = new ArrayAdapter(this, android.R.layout.simple_list_item_1, list);
+        bt_list_view.setAdapter(adapter);
+    }
+*/
+
+    public void on_bt_scan_button_clicked(View v) {
         if (bt_scanning) {
             bt_adapter.cancelDiscovery();
-            scan_button.setText("Scan Witworks App");
-            bt_scanning = false;
         } else {
-            if (!bt_adapter.isEnabled()) {
-                Intent bt_on = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-                startActivityForResult(bt_on, 0);
-                // Toast.makeText(getApplicationContext(), "Turned bluetooth on", Toast.LENGTH_LONG).show();
+            if (bt_discoverable) {
+                Intent discoverable_intent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+                startActivityForResult(discoverable_intent, 2);
             }
-
-            Intent visible = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
-            startActivityForResult(visible, 0);
-
-            Set<BluetoothDevice> paired = bt_adapter.getBondedDevices();
-            final ArrayList list = new ArrayList<BluetoothDevice>();
-
-            for (BluetoothDevice bt_dev : paired) {
-                bt_device_list.add(bt_dev);
-                /*
-                 * TODO: From the MAC address generate a unique string and show it to user
-                 * Same string must be shown in phone and device's witworks app.
-                 */
-                list.add(bt_dev.getName());
-            }
-
-            final ArrayAdapter adapter = new ArrayAdapter(this, android.R.layout.simple_list_item_1, list);
-            bt_list_view.setAdapter(adapter);
-
-            IntentFilter bt_filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
-            BroadcastReceiver bt_receiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(Context context, Intent intent) {
-                    String action = intent.getAction();
-                    if (BluetoothDevice.ACTION_FOUND.equals(action)) {
-                        BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                        bt_device_list.add(device);
-                        list.add(device.getName());
-                        bt_list_view.setAdapter(adapter);
-                    }
-                }
-            };
-
-            getApplicationContext().registerReceiver(bt_receiver, bt_filter);
             bt_adapter.startDiscovery();
-
-            bt_scanning = true;
-            scan_button.setText("Stop scanning");
         }
+    }
+
+    @Override
+    protected void onActivityResult(int request_code, int result, Intent data) {
+        // super.onActivityResult(request_code, result, data);
+        if (request_code == 1) {
+            Intent discoverable_intent = new Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE);
+            startActivityForResult(discoverable_intent, 2);
+        }
+    }
+
+    private void pair_device(BluetoothDevice device) {
+        String dev_name = device.getName();
+        dev_name = dev_name;
+        device.createBond();
+        /*
+        Intent pairing_intent = new Intent(BluetoothDevice.ACTION_PAIRING_REQUEST);
+        pairing_intent.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+        pairing_intent.putExtra(BluetoothDevice.EXTRA_PAIRING_KEY,
+                (int) Math.floor(Math.random() * 100000));
+        pairing_intent.putExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT,
+                BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION);
+        // pairing_intent.putExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.PAIRING_VARIANT_PIN);
+        pairing_intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivityForResult(pairing_intent, 3);
+        // getApplicationContext().startActivityForResult(pairing_intent);
+        // getApplicationContext().sendOrderedBroadcast(intent, getApplicationContext().);
+        */
     }
 }
