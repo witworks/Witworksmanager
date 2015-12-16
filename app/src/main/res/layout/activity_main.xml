@@ -16,7 +16,8 @@
         tools:listitem="@android:layout/simple_list_item_1"
         android:layout_alignParentLeft="true"
         android:layout_alignParentStart="true"
-        android:layout_above="@+id/bt_scan_button" />
+        android:layout_above="@+id/bt_scan_button"
+        android:layout_below="@+id/text_to_send" />
 
     <Button
         android:layout_width="wrap_content"
@@ -29,4 +30,23 @@
         android:layout_alignParentRight="true"
         android:layout_alignParentEnd="true"
         android:onClick="on_bt_scan_button_clicked" />
+
+    <EditText
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:inputType="textMultiLine"
+        android:ems="10"
+        android:id="@+id/text_to_send"
+        android:layout_alignParentTop="true"
+        android:layout_alignParentStart="true" />
+
+    <Button
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Send"
+        android:id="@+id/send_button"
+        android:layout_above="@+id/bt_dev_list"
+        android:layout_alignEnd="@+id/bt_dev_list"
+        android:layout_toEndOf="@+id/text_to_send"
+        android:onClick="on_bt_send_button_clicked" />
 </RelativeLayout>
